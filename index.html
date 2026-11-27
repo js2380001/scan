@@ -65,7 +65,7 @@
     video, canvas {
       width: 100%;
       height: 100%;
-      object-fit: contain; /* 完整呈現鏡頭捕捉到的所有範圍，100% 所見即所得 */
+      object-fit: cover; /* 填滿掃描框，確保螢幕中央瞄準框與實際裁切區域 100% 對齊 */
     }
     video {
       display: block;
@@ -73,6 +73,59 @@
     canvas {
       display: none;
     }
+
+    /* 類似 LINE 的中央掃描瞄準框與周邊暗角遮罩 */
+    .scan-guide-overlay {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      pointer-events: none;
+      z-index: 10;
+    }
+    .scan-guide-box {
+      position: relative;
+      width: 65%;
+      aspect-ratio: 1 / 1;
+      max-width: 220px;
+      max-height: 220px;
+      box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.48);
+      border: 1px solid rgba(255, 255, 255, 0.35);
+      border-radius: 6px;
+    }
+    .scan-guide-box::before,
+    .scan-guide-box::after,
+    .scan-guide-corners::before,
+    .scan-guide-corners::after {
+      content: '';
+      position: absolute;
+      width: 22px;
+      height: 22px;
+      border-color: #06C755;
+      border-style: solid;
+      border-width: 0;
+    }
+    .scan-guide-box::before { top: -2px; left: -2px; border-top-width: 4px; border-left-width: 4px; border-top-left-radius: 6px; }
+    .scan-guide-box::after { top: -2px; right: -2px; border-top-width: 4px; border-right-width: 4px; border-top-right-radius: 6px; }
+    .scan-guide-corners { position: absolute; inset: 0; }
+    .scan-guide-corners::before { bottom: -2px; left: -2px; border-bottom-width: 4px; border-left-width: 4px; border-bottom-left-radius: 6px; }
+    .scan-guide-corners::after { bottom: -2px; right: -2px; border-bottom-width: 4px; border-right-width: 4px; border-bottom-right-radius: 6px; }
+    .scan-guide-line {
+      position: absolute;
+      left: 6%;
+      width: 88%;
+      height: 2px;
+      background: linear-gradient(90deg, transparent, #06C755, transparent);
+      box-shadow: 0 0 8px #06C755;
+      animation: lineScanMove 2s infinite ease-in-out;
+    }
+    @keyframes lineScanMove {
+      0% { top: 8%; }
+      50% { top: 90%; }
+      100% { top: 8%; }
+    }
+
 
     /* 下方資訊卡與按鈕區：固定高度不壓縮、不溢出 */
     .card {
@@ -167,7 +220,14 @@
   <div class="cam-box">
     <video id="camVideo" playsinline autoplay muted></video>
     <canvas id="scanCanvas"></canvas>
+    <div id="scanGuideOverlay" class="scan-guide-overlay">
+      <div class="scan-guide-box">
+        <div class="scan-guide-corners"></div>
+        <div class="scan-guide-line"></div>
+      </div>
+    </div>
   </div>
+
 
   <div class="card">
     <div class="label">目前狀態</div>
@@ -263,12 +323,21 @@
       }
     }
 
-    function stopCameraStream(keepFrozenFrame) {
+       function stopCameraStream(keepFrozenFrame) {
       stopScanLoop();
+      const guideEl = document.getElementById('scanGuideOverlay');
       if (keepFrozenFrame && canvasEl && canvasEl.width > 0) {
+        // 定格時將完整畫面畫回 canvas 呈現，並隱藏掃描動態線條
+        if (videoEl && videoEl.videoWidth > 0 && videoEl.videoHeight > 0) {
+          canvasEl.width = videoEl.videoWidth;
+          canvasEl.height = videoEl.videoHeight;
+          ctx.drawImage(videoEl, 0, 0, canvasEl.width, canvasEl.height);
+        }
+        if (guideEl) guideEl.style.display = 'none';
         canvasEl.style.display = 'block';
         videoEl.style.display = 'none';
       } else {
+        if (guideEl) guideEl.style.display = 'flex';
         if (canvasEl) canvasEl.style.display = 'none';
         if (videoEl) videoEl.style.display = 'block';
       }
@@ -278,6 +347,7 @@
       }
       videoEl.srcObject = null;
     }
+
 
     async function initCamera() {
       stopCameraStream(false);
@@ -320,29 +390,43 @@
       startScanLoop();
     }
 
-    function startScanLoop() {
+        function startScanLoop() {
       if (isSending) return;
       stopScanLoop();
       isScanning = true;
       setRescanVisible(false);
-      setStatus('鏡頭已啟動，請對準 QR Code');
+      setStatus('鏡頭已啟動，請將 QR Code 對準綠色框內');
 
       const tick = () => {
         if (!isScanning || isSending) return;
 
         if (videoEl.readyState === videoEl.HAVE_ENOUGH_DATA && videoEl.videoWidth > 0 && videoEl.videoHeight > 0) {
-          canvasEl.width = videoEl.videoWidth;
-          canvasEl.height = videoEl.videoHeight;
-          ctx.drawImage(videoEl, 0, 0, canvasEl.width, canvasEl.height);
+          const vw = videoEl.videoWidth;
+          const vh = videoEl.videoHeight;
 
-          const imageData = ctx.getImageData(0, 0, canvasEl.width, canvasEl.height);
-          const code = jsQR(imageData.data, imageData.width, imageData.height, {
-            inversionAttempts: 'attemptBoth'
-          });
+          // 計算螢幕實際顯示與原始視訊的比例，精準對應中央 65% 綠色瞄準框範圍
+          const boxRect = videoEl.getBoundingClientRect();
+          const scale = Math.max(boxRect.width / vw, boxRect.height / vh);
+          const visibleW = boxRect.width / scale;
+          const visibleH = boxRect.height / scale;
+          const cropSize = Math.floor(Math.min(visibleW, visibleH) * 0.65);
+          const cropX = Math.floor((vw - cropSize) / 2);
+          const cropY = Math.floor((vh - cropSize) / 2);
 
-          if (code && code.data) {
-            handleDecoded(code.data);
-            return;
+          if (cropSize > 0) {
+            canvasEl.width = cropSize;
+            canvasEl.height = cropSize;
+            ctx.drawImage(videoEl, cropX, cropY, cropSize, cropSize, 0, 0, cropSize, cropSize);
+
+            const imageData = ctx.getImageData(0, 0, cropSize, cropSize);
+            const code = jsQR(imageData.data, imageData.width, imageData.height, {
+              inversionAttempts: 'attemptBoth'
+            });
+
+            if (code && code.data) {
+              handleDecoded(code.data);
+              return;
+            }
           }
         }
 
@@ -351,6 +435,7 @@
 
       rafId = requestAnimationFrame(tick);
     }
+
 
     function handleDecoded(decodedText) {
       if (isSending) return;
