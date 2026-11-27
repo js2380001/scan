@@ -359,10 +359,26 @@
       const cleanText = String(decodedText || '').trim();
       pendingDecodedText = cleanText;
       setDecoded(cleanText, true);
-      setStatus('掃描解析完成！請核對上方內容後按下「確認送出」');
       setConfirmBtnEnabled(true);
       setRescanVisible(true, false);
+
+      // 向主系統查詢此 QR Code 對應的 Tools 工作頁資訊（工具分類、工具名稱、工具編號）
+      const targetWin = window.opener || (window.parent !== window ? window.parent : null);
+      if (targetWin) {
+        setStatus('掃描解析完成！正在核對工具資料... ⏳');
+        try {
+          targetWin.postMessage({
+            type: 'QUERY_TOOL_INFO_BY_QR',
+            decodedText: cleanText
+          }, '*');
+        } catch (e) {
+          setStatus('掃描解析完成！請核對上方內容後按下「確認送出」');
+        }
+      } else {
+        setStatus('掃描解析完成！請核對上方內容後按下「確認送出」');
+      }
     }
+
 
 
     function confirmAndSendToGas() {
@@ -425,8 +441,26 @@
         initCamera();
       } else if (event.data.type === 'STOP_CAMERA') {
         stopCameraStream();
+      } else if (event.data.type === 'TOOL_INFO_RESULT') {
+        // 確認回傳的是目前這筆剛掃描的條碼結果，避免非同步錯位
+        if (event.data.decodedText !== pendingDecodedText) return;
+        const statusEl = document.getElementById('statusText');
+        if (!statusEl) return;
+
+        if (event.data.found) {
+          statusEl.innerHTML =
+            '<div style="font-weight:bold; color:#198754; margin-bottom:2px;">✅ 掃描解析完成(請核對後[確認送出]或[重新掃描]）：</div>' +
+            '<div style="font-size:14px; font-weight:bold; color:#202124;">' +
+              '分類：<span style="color:#0d6efd;">' + event.data.category + '</span>' +
+              '<br>名稱：<span style="color:#0d6efd;">' + event.data.name + '</span>' +
+              '<br>編號：<span style="color:#0d6efd;">' + event.data.toolId + '</span>' +
+            '</div>';
+        } else {
+          statusEl.innerHTML = '<span style="color:#dc3545; font-weight:bold;">⚠️ 查無此工具資料（非本系統 QR-CODE），請按「重新掃描」</span>';
+        }
       }
     });
+
 
     window.addEventListener('DOMContentLoaded', initCamera);
     window.addEventListener('beforeunload', stopCameraStream);
